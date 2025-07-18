@@ -1,0 +1,6 @@
+@HL7_JP_CLINS_HostAddress = http://localhost:5137
+
+GET {{HL7_JP_CLINS_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###
