@@ -53,3 +53,5 @@ CodeCoverage/
 TestResult.xml
 nunit-*.xml
 /HL7-JP-CLINS/.vs
+
+.fake

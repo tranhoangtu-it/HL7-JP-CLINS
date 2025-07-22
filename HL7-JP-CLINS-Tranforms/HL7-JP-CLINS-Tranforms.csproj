@@ -7,4 +7,13 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
 
+  <ItemGroup>
+    <PackageReference Include="Hl7.Fhir.R4" Version="5.8.0" />
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\HL7-JP-CLINS-Core\HL7-JP-CLINS-Core.csproj" />
+  </ItemGroup>
+
 </Project>
