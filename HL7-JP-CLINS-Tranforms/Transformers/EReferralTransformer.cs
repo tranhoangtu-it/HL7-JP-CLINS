@@ -1,10 +1,12 @@
-using Hl7.Fhir.Model;
 using HL7_JP_CLINS_Core.Constants;
+using HL7_JP_CLINS_Core.FhirModels;
+using HL7_JP_CLINS_Core.FhirModels.Base;
 using HL7_JP_CLINS_Core.Models.InputModels;
 using HL7_JP_CLINS_Core.Utilities;
 using HL7_JP_CLINS_Tranforms.Base;
 using HL7_JP_CLINS_Tranforms.Interfaces;
 using HL7_JP_CLINS_Tranforms.Mappers;
+using HL7_JP_CLINS_Tranforms.Utilities;
 using Newtonsoft.Json.Linq;
 
 namespace HL7_JP_CLINS_Tranforms.Transformers
@@ -35,36 +37,23 @@ namespace HL7_JP_CLINS_Tranforms.Transformers
             var composition = new Composition
             {
                 Id = FhirHelper.GenerateUniqueId("Composition"),
-                Meta = new Meta
-                {
-                    Profile = new[] { JpClinsConstants.ResourceProfiles.Condition }, // eReferral composition profile
-                    LastUpdated = DateTimeOffset.UtcNow
-                },
-                Status = CompositionStatus.Final,
+                Status = "final",
                 Type = CreateJapaneseCodeableConcept(
                     code: "18761-7",
                     system: JpClinsConstants.CodingSystems.LOINC,
                     display: "Provider-unspecified referral note"),
 
                 // Patient subject
-                Subject = FhirHelper.CreateReference("Patient", GetPatientId(input)),
-
-                // Encounter context
-                Encounter = input.encounterId != null
-                    ? FhirHelper.CreateReference("Encounter", input.encounterId.ToString())
-                    : null,
+                Subject = CreateResourceReference(new Patient { Id = GetPatientId(input) }),
 
                 // Document date
-                DateElement = new FhirDateTime(input.referralDate ?? DateTime.UtcNow),
+                // TODO: Add date field to Composition model
 
                 // Author (referring practitioner)
-                Author = new List<ResourceReference>
+                Author = new List<Reference>
                 {
-                    FhirHelper.CreateReference("Practitioner", GetPractitionerId(input))
-                },
-
-                // Document title
-                Title = "電子紹介状 (eReferral)"
+                    CreateResourceReference(new Practitioner { Id = GetPractitionerId(input) })
+                }
             };
 
             // Create composition sections for eReferral
@@ -78,9 +67,9 @@ namespace HL7_JP_CLINS_Tranforms.Transformers
         /// </summary>
         /// <param name="input">eReferral input data</param>
         /// <returns>List of FHIR resources</returns>
-        protected override List<Resource> TransformToResources(dynamic input)
+        protected override List<FhirResource> TransformToResources(dynamic input)
         {
-            var resources = new List<Resource>();
+            var resources = new List<FhirResource>();
 
             try
             {
@@ -98,44 +87,43 @@ namespace HL7_JP_CLINS_Tranforms.Transformers
                     resources.Add(practitioner);
                 }
 
-                // 3. Transform referring Organization
+                // 3. Transform clinical resources (conditions, allergies, medications, observations)
+                var clinicalResources = TransformClinicalResources(input);
+                resources.AddRange(clinicalResources);
+
+                // 4. Transform ServiceRequest (referral request)
+                var serviceRequest = TransformServiceRequest(input);
+                if (serviceRequest != null)
+                {
+                    resources.Add(serviceRequest);
+                }
+
+                // 5. Transform organizations (referring and receiving facilities)
                 if (input.referringOrganization != null)
                 {
-                    var organization = TransformOrganization(input.referringOrganization, "referring");
-                    resources.Add(organization);
+                    var referringOrg = TransformOrganization(input.referringOrganization, "referring");
+                    resources.Add(referringOrg);
                 }
 
-                // 4. Transform receiving Organization (if specified)
                 if (input.receivingOrganization != null)
                 {
-                    var organization = TransformOrganization(input.receivingOrganization, "receiving");
-                    resources.Add(organization);
+                    var receivingOrg = TransformOrganization(input.receivingOrganization, "receiving");
+                    resources.Add(receivingOrg);
                 }
 
-                // 5. Transform Encounter resource
+                // 6. Transform encounter if present
                 if (input.encounter != null)
                 {
                     var encounter = TransformEncounter(input.encounter);
                     resources.Add(encounter);
                 }
 
-                // 6. Transform Clinical Information Resources (Core 5 Information)
-                resources.AddRange(TransformClinicalResources(input));
-
-                // 7. Transform ServiceRequest (what is being requested)
-                if (input.serviceRequested != null)
-                {
-                    var serviceRequest = TransformServiceRequest(input);
-                    resources.Add(serviceRequest);
-                }
-
-                // 8. Transform DocumentReference for attachments (if any)
+                // 7. Transform attachments if present
                 if (input.attachments != null)
                 {
                     var attachments = TransformAttachments(input.attachments);
                     resources.AddRange(attachments);
                 }
-
             }
             catch (Exception ex)
             {
@@ -146,248 +134,219 @@ namespace HL7_JP_CLINS_Tranforms.Transformers
         }
 
         /// <summary>
-        /// Creates composition sections specific to eReferral documents
+        /// Creates composition sections for eReferral document
         /// </summary>
-        /// <param name="input">eReferral input data</param>
+        /// <param name="input">Input data</param>
         /// <returns>List of composition sections</returns>
-        private List<Composition.SectionComponent> CreateEReferralSections(dynamic input)
+        private List<CompositionSection> CreateEReferralSections(dynamic input)
         {
-            var sections = new List<Composition.SectionComponent>();
+            var sections = new List<CompositionSection>();
 
-            // Referral reason section (紹介理由)
-            var reasonSection = new Composition.SectionComponent
+            // Chief complaint section
+            if (input.chiefComplaint != null)
             {
-                Title = "紹介理由 (Referral Reason)",
-                Code = CreateJapaneseCodeableConcept(
-                    code: "42349-1",
-                    system: JpClinsConstants.CodingSystems.LOINC,
-                    display: "Reason for referral"),
-                Text = new Narrative
+                sections.Add(new CompositionSection
                 {
-                    Status = Narrative.NarrativeStatus.Generated,
-                    Div = $"<div xmlns=\"http://www.w3.org/1999/xhtml\">{input.referralReason ?? "紹介理由が記載されています"}</div>"
-                }
-            };
-            sections.Add(reasonSection);
+                    Title = "主訴 (Chief Complaint)",
+                    Code = CreateJapaneseCodeableConcept(
+                        code: "10154-3",
+                        system: JpClinsConstants.CodingSystems.LOINC,
+                        display: "Chief complaint"),
+                    Text = TransformHelper.SafeGetString(input, "chiefComplaint")
+                });
+            }
 
-            // Current medications section (現在の処方)
-            if (input.medications != null && HasMedications(input.medications))
+            // Present illness section
+            if (input.presentIllness != null)
             {
-                var medicationsSection = new Composition.SectionComponent
+                sections.Add(new CompositionSection
                 {
-                    Title = "現在の処方 (Current Medications)",
+                    Title = "現病歴 (Present Illness)",
+                    Code = CreateJapaneseCodeableConcept(
+                        code: "10164-2",
+                        system: JpClinsConstants.CodingSystems.LOINC,
+                        display: "History of present illness"),
+                    Text = TransformHelper.SafeGetString(input, "presentIllness")
+                });
+            }
+
+            // Past medical history section
+            if (input.pastMedicalHistory != null)
+            {
+                sections.Add(new CompositionSection
+                {
+                    Title = "既往歴 (Past Medical History)",
+                    Code = CreateJapaneseCodeableConcept(
+                        code: "11348-0",
+                        system: JpClinsConstants.CodingSystems.LOINC,
+                        display: "History of past illness"),
+                    Text = TransformHelper.SafeGetString(input, "pastMedicalHistory")
+                });
+            }
+
+            // Medications section
+            if (HasMedications(input.medications))
+            {
+                sections.Add(new CompositionSection
+                {
+                    Title = "投薬情報 (Medications)",
                     Code = CreateJapaneseCodeableConcept(
                         code: "10160-0",
                         system: JpClinsConstants.CodingSystems.LOINC,
-                        display: "History of Medication use Narrative"),
-                    Entry = new List<ResourceReference>()
-                };
-                sections.Add(medicationsSection);
+                        display: "History of medication use")
+                });
             }
 
-            // Allergies and adverse reactions section (アレルギー・副作用歴)
-            if (input.allergies != null && HasAllergies(input.allergies))
+            // Allergies section
+            if (HasAllergies(input.allergies))
             {
-                var allergiesSection = new Composition.SectionComponent
+                sections.Add(new CompositionSection
                 {
-                    Title = "アレルギー・副作用歴 (Allergies and Adverse Reactions)",
+                    Title = "アレルギー情報 (Allergies)",
                     Code = CreateJapaneseCodeableConcept(
                         code: "48765-2",
                         system: JpClinsConstants.CodingSystems.LOINC,
-                        display: "Allergies and adverse reactions Document"),
-                    Entry = new List<ResourceReference>()
-                };
-                sections.Add(allergiesSection);
+                        display: "Allergies and adverse reactions")
+                });
             }
 
-            // Problem list section (現在の問題リスト)
-            if (input.conditions != null && HasConditions(input.conditions))
+            // Physical examination section
+            if (input.physicalExamination != null)
             {
-                var problemsSection = new Composition.SectionComponent
+                sections.Add(new CompositionSection
                 {
-                    Title = "現在の問題リスト (Problem List)",
+                    Title = "身体所見 (Physical Examination)",
                     Code = CreateJapaneseCodeableConcept(
-                        code: "11450-4",
+                        code: "29545-1",
                         system: JpClinsConstants.CodingSystems.LOINC,
-                        display: "Problem list"),
-                    Entry = new List<ResourceReference>()
-                };
-                sections.Add(problemsSection);
+                        display: "Physical examination"),
+                    Text = TransformHelper.SafeGetString(input, "physicalExamination")
+                });
             }
 
-            // Laboratory results section (検査結果)
-            if (input.labResults != null && HasObservations(input.labResults))
+            // Laboratory results section
+            if (HasObservations(input.laboratoryResults))
             {
-                var labSection = new Composition.SectionComponent
+                sections.Add(new CompositionSection
                 {
                     Title = "検査結果 (Laboratory Results)",
                     Code = CreateJapaneseCodeableConcept(
                         code: "30954-2",
                         system: JpClinsConstants.CodingSystems.LOINC,
-                        display: "Relevant diagnostic tests/laboratory data"),
-                    Entry = new List<ResourceReference>()
-                };
-                sections.Add(labSection);
+                        display: "Relevant diagnostic tests/laboratory data")
+                });
             }
 
-            // Service request section (依頼サービス)
-            var serviceSection = new Composition.SectionComponent
+            // Imaging results section
+            if (HasObservations(input.imagingResults))
             {
-                Title = "依頼サービス (Requested Services)",
-                Code = CreateJapaneseCodeableConcept(
-                    code: "62387-6",
-                    system: JpClinsConstants.CodingSystems.LOINC,
-                    display: "Interventions provided"),
-                Entry = new List<ResourceReference>()
-            };
-            sections.Add(serviceSection);
+                sections.Add(new CompositionSection
+                {
+                    Title = "画像検査結果 (Imaging Results)",
+                    Code = CreateJapaneseCodeableConcept(
+                        code: "18748-4",
+                        system: JpClinsConstants.CodingSystems.LOINC,
+                        display: "Diagnostic imaging study")
+                });
+            }
+
+            // Assessment and plan section
+            if (input.assessmentAndPlan != null)
+            {
+                sections.Add(new CompositionSection
+                {
+                    Title = "診断・治療計画 (Assessment and Plan)",
+                    Code = CreateJapaneseCodeableConcept(
+                        code: "51847-2",
+                        system: JpClinsConstants.CodingSystems.LOINC,
+                        display: "Assessment and plan"),
+                    Text = TransformHelper.SafeGetString(input, "assessmentAndPlan")
+                });
+            }
 
             return sections;
         }
 
         /// <summary>
-        /// Transforms clinical resources (Core 5 Information) from input data
+        /// Transforms clinical resources (conditions, allergies, medications, observations)
         /// </summary>
         /// <param name="input">Input data</param>
-        /// <returns>List of clinical FHIR resources</returns>
-        private List<Resource> TransformClinicalResources(dynamic input)
+        /// <returns>List of clinical resources</returns>
+        private List<FhirResource> TransformClinicalResources(dynamic input)
         {
-            var resources = new List<Resource>();
+            var resources = new List<FhirResource>();
 
-            try
+            // Transform conditions
+            if (HasConditions(input.conditions))
             {
-                // Transform Allergies/Intolerances
-                if (input.allergies != null)
+                foreach (var conditionData in input.conditions)
                 {
-                    var allergiesArray = input.allergies as System.Collections.IEnumerable;
-                    if (allergiesArray != null)
-                    {
-                        foreach (var allergyData in allergiesArray)
-                        {
-                            var allergyInput = CreateAllergyInputModel(allergyData);
-                            var allergyResource = ResourceTransformHelper.TransformAllergyIntolerance(allergyInput);
-                            resources.Add(allergyResource);
-                        }
-                    }
-                }
-
-                // Transform Conditions/Diagnoses
-                if (input.conditions != null)
-                {
-                    var conditionsArray = input.conditions as System.Collections.IEnumerable;
-                    if (conditionsArray != null)
-                    {
-                        foreach (var conditionData in conditionsArray)
-                        {
-                            var conditionInput = CreateConditionInputModel(conditionData);
-                            var conditionResource = ResourceTransformHelper.TransformCondition(conditionInput);
-                            resources.Add(conditionResource);
-                        }
-                    }
-                }
-
-                // Transform Observations/Lab Results
-                if (input.observations != null)
-                {
-                    var observationsArray = input.observations as System.Collections.IEnumerable;
-                    if (observationsArray != null)
-                    {
-                        foreach (var observationData in observationsArray)
-                        {
-                            var observationInput = CreateObservationInputModel(observationData);
-                            var observationResource = ResourceTransformHelper.TransformObservation(observationInput);
-                            resources.Add(observationResource);
-                        }
-                    }
-                }
-
-                // Transform Medications
-                if (input.medications != null)
-                {
-                    var medicationsArray = input.medications as System.Collections.IEnumerable;
-                    if (medicationsArray != null)
-                    {
-                        foreach (var medicationData in medicationsArray)
-                        {
-                            var medicationInput = CreateMedicationInputModel(medicationData);
-                            var medicationResource = ResourceTransformHelper.TransformMedicationRequest(medicationInput);
-                            resources.Add(medicationResource);
-                        }
-                    }
+                    var conditionInput = CreateConditionInputModel(conditionData);
+                    // TODO: Create Condition resource from input model
+                    // var condition = new Condition { ... };
+                    // resources.Add(condition);
                 }
             }
-            catch (Exception ex)
+
+            // Transform allergies
+            if (HasAllergies(input.allergies))
             {
-                throw new InvalidOperationException($"Failed to transform clinical resources: {ex.Message}", ex);
+                foreach (var allergyData in input.allergies)
+                {
+                    var allergyInput = CreateAllergyInputModel(allergyData);
+                    // TODO: Create AllergyIntolerance resource from input model
+                    // var allergy = new AllergyIntolerance { ... };
+                    // resources.Add(allergy);
+                }
+            }
+
+            // Transform medications
+            if (HasMedications(input.medications))
+            {
+                foreach (var medicationData in input.medications)
+                {
+                    var medicationInput = CreateMedicationInputModel(medicationData);
+                    // TODO: Create MedicationRequest resource from input model
+                    // var medication = new MedicationRequest { ... };
+                    // resources.Add(medication);
+                }
+            }
+
+            // Transform observations
+            if (HasObservations(input.laboratoryResults))
+            {
+                foreach (var observationData in input.laboratoryResults)
+                {
+                    var observationInput = CreateObservationInputModel(observationData);
+                    // TODO: Create Observation resource from input model
+                    // var observation = new Observation { ... };
+                    // resources.Add(observation);
+                }
             }
 
             return resources;
         }
 
         /// <summary>
-        /// Transforms ServiceRequest for the referral
+        /// Transforms ServiceRequest for referral
         /// </summary>
         /// <param name="input">Input data</param>
         /// <returns>ServiceRequest resource</returns>
         private ServiceRequest TransformServiceRequest(dynamic input)
         {
-            var serviceRequest = new ServiceRequest
-            {
-                Id = FhirHelper.GenerateUniqueId("ServiceRequest"),
-                Meta = new Meta
-                {
-                    Profile = new[] { JpClinsConstants.ResourceProfiles.Procedure },
-                    LastUpdated = DateTimeOffset.UtcNow
-                },
-                Status = RequestStatus.Active,
-                Intent = RequestIntent.Order,
-                Subject = FhirHelper.CreateReference("Patient", GetPatientId(input)),
-                Requester = FhirHelper.CreateReference("Practitioner", GetPractitionerId(input)),
-                AuthoredOnElement = new FhirDateTime(input.referralDate ?? DateTime.UtcNow)
-            };
-
-            // Service being requested
-            if (input.serviceRequested != null)
-            {
-                serviceRequest.Code = CreateJapaneseCodeableConcept(
-                    code: input.serviceRequested.code?.ToString() ?? "consultation",
-                    system: JpClinsConstants.CodingSystems.JapanProcedure,
-                    display: input.serviceRequested.name?.ToString() ?? "医学的相談");
-            }
-
-            // Priority/urgency
-            if (input.urgency != null)
-            {
-                serviceRequest.Priority = input.urgency.ToString().ToLower() switch
-                {
-                    "routine" => RequestPriority.Routine,
-                    "urgent" => RequestPriority.Urgent,
-                    "asap" => RequestPriority.Asap,
-                    "stat" => RequestPriority.Stat,
-                    _ => RequestPriority.Routine
-                };
-            }
-
-            // Reason for referral
-            if (input.referralReason != null)
-            {
-                serviceRequest.ReasonCode = new List<CodeableConcept>
-                {
-                    new CodeableConcept { Text = input.referralReason.ToString() }
-                };
-            }
-
-            return serviceRequest;
+            // TODO: Create ServiceRequest model and implement transformation
+            // For now, return null as ServiceRequest is not yet implemented
+            return null;
         }
 
         /// <summary>
-        /// Document-specific input validation for eReferral
+        /// Validates input data specific to eReferral
         /// </summary>
         /// <param name="input">Input data to validate</param>
-        /// <param name="result">Validation result to update</param>
+        /// <param name="result">Validation result to populate</param>
         protected override void ValidateSpecificInput(dynamic input, ValidationResult result)
         {
-            // Validate required eReferral fields
+            // Validate required fields for eReferral
             if (input.patient == null)
             {
                 result.AddError("Patient information is required for eReferral");
@@ -395,58 +354,48 @@ namespace HL7_JP_CLINS_Tranforms.Transformers
 
             if (input.referringPractitioner == null)
             {
-                result.AddError("Referring practitioner information is required");
+                result.AddError("Referring practitioner information is required for eReferral");
             }
 
-            if (string.IsNullOrWhiteSpace(input.referralReason?.ToString()))
+            if (input.referralDate == null)
             {
-                result.AddError("Referral reason is required");
+                result.AddError("Referral date is required for eReferral");
             }
 
-            if (input.serviceRequested == null)
-            {
-                result.AddError("Service requested information is required");
-            }
-
-            // JP-CLINS specific validations
+            // Validate Japanese-specific fields
             ValidateJapaneseSpecificFields(input, result);
+
+            // Validate service codes if present
+            if (input.serviceCode != null)
+            {
+                ValidateJapaneseServiceCodes(TransformHelper.SafeGetString(input, "serviceCode"), result);
+            }
         }
 
         /// <summary>
-        /// Validates JP-CLINS specific requirements for eReferral
+        /// Validates Japanese-specific fields for eReferral
         /// </summary>
         /// <param name="input">Input data</param>
         /// <param name="result">Validation result</param>
         private void ValidateJapaneseSpecificFields(dynamic input, ValidationResult result)
         {
-            // Validate Japanese medical license numbers
+            // Validate referring practitioner medical license number
             if (input.referringPractitioner?.medicalLicenseNumber != null)
             {
-                var licenseNumber = input.referringPractitioner.medicalLicenseNumber.ToString();
+                var licenseNumber = TransformHelper.SafeGetString(input.referringPractitioner, "medicalLicenseNumber");
                 if (!FhirHelper.ValidateMedicalLicenseNumber(licenseNumber))
                 {
-                    result.AddError($"Invalid Japanese medical license number: {licenseNumber}");
+                    result.AddWarning($"Invalid medical license number format: {licenseNumber}");
                 }
             }
 
-            // Validate Japanese organization codes
-            if (input.referringOrganization?.facilityCode != null)
+            // Validate patient insurance information
+            if (input.patient?.insuranceNumber != null)
             {
-                var facilityCode = input.referringOrganization.facilityCode.ToString();
-                if (!FhirHelper.ValidateJapaneseIdentifier(facilityCode, "facility-code"))
+                var insuranceNumber = TransformHelper.SafeGetString(input.patient, "insuranceNumber");
+                if (string.IsNullOrWhiteSpace(insuranceNumber) || insuranceNumber.Length < 8)
                 {
-                    result.AddError($"Invalid Japanese facility code: {facilityCode}");
-                }
-            }
-
-            // Validate service codes follow Japanese standards
-            if (input.serviceRequested?.code != null)
-            {
-                var serviceCode = input.serviceRequested.code.ToString();
-                // TODO: Validate against Japanese service code systems (MEDIS-DC, etc.)
-                if (string.IsNullOrWhiteSpace(serviceCode))
-                {
-                    result.AddWarning("Service code should follow Japanese coding standards");
+                    result.AddWarning("Insurance number should be at least 8 characters long");
                 }
             }
         }
@@ -462,85 +411,149 @@ namespace HL7_JP_CLINS_Tranforms.Transformers
         private AllergyIntoleranceInputModel CreateAllergyInputModel(dynamic allergyData) =>
             new AllergyIntoleranceInputModel
             {
-                PatientId = GetPatientId(null),
-                SubstanceName = allergyData.substanceName?.ToString() ?? "",
-                Category = allergyData.category?.ToString() ?? "medication",
-                ReactionSeverity = allergyData.severity?.ToString(),
-                // Map other fields as needed
+                SubstanceName = TransformHelper.SafeGetString(allergyData, "substanceName"),
+                Reaction = TransformHelper.SafeGetString(allergyData, "reaction"),
+                Severity = TransformHelper.SafeGetString(allergyData, "severity")
             };
 
         private ConditionInputModel CreateConditionInputModel(dynamic conditionData) =>
             new ConditionInputModel
             {
-                PatientId = GetPatientId(null),
-                ConditionName = conditionData.name?.ToString() ?? "",
-                ConditionCode = conditionData.code?.ToString(),
-                ClinicalStatus = conditionData.status?.ToString() ?? "active",
-                // Map other fields as needed
+                Code = TransformHelper.SafeGetString(conditionData, "code"),
+                CodeSystem = TransformHelper.SafeGetString(conditionData, "codeSystem"),
+                Display = TransformHelper.SafeGetString(conditionData, "display"),
+                OnsetDate = TransformHelper.SafeGetDateTime(conditionData, "onsetDate")
             };
 
         private ObservationInputModel CreateObservationInputModel(dynamic observationData) =>
             new ObservationInputModel
             {
-                PatientId = GetPatientId(null),
-                ObservationCode = observationData.code?.ToString() ?? "",
-                ObservationCodeSystem = observationData.codeSystem?.ToString() ?? JpClinsConstants.CodingSystems.LOINC,
-                ObservationName = observationData.name?.ToString() ?? "",
-                Status = "final",
-                // Map other fields as needed
+                Code = TransformHelper.SafeGetString(observationData, "code"),
+                CodeSystem = TransformHelper.SafeGetString(observationData, "codeSystem"),
+                Value = TransformHelper.SafeGetString(observationData, "value"),
+                Unit = TransformHelper.SafeGetString(observationData, "unit"),
+                EffectiveDate = TransformHelper.SafeGetDateTime(observationData, "effectiveDate")
             };
 
         private MedicationRequestInputModel CreateMedicationInputModel(dynamic medicationData) =>
             new MedicationRequestInputModel
             {
-                PatientId = GetPatientId(null),
-                MedicationName = medicationData.name?.ToString() ?? "",
-                MedicationCode = medicationData.code?.ToString(),
-                RequesterId = GetPractitionerId(null),
-                // Map other fields as needed
+                MedicationCode = TransformHelper.SafeGetString(medicationData, "medicationCode"),
+                MedicationName = TransformHelper.SafeGetString(medicationData, "medicationName"),
+                Dosage = TransformHelper.SafeGetString(medicationData, "dosage"),
+                Frequency = TransformHelper.SafeGetString(medicationData, "frequency"),
+                StartDate = TransformHelper.SafeGetDateTime(medicationData, "startDate")
             };
 
-        // Helper methods for checking data existence
+        // Helper methods for checking data presence
         private bool HasMedications(dynamic medications) =>
-            medications is System.Collections.IEnumerable enumerable && enumerable.Cast<object>().Any();
+            medications != null && ((IEnumerable<dynamic>)medications).Any();
 
         private bool HasAllergies(dynamic allergies) =>
-            allergies is System.Collections.IEnumerable enumerable && enumerable.Cast<object>().Any();
+            allergies != null && ((IEnumerable<dynamic>)allergies).Any();
 
         private bool HasConditions(dynamic conditions) =>
-            conditions is System.Collections.IEnumerable enumerable && enumerable.Cast<object>().Any();
+            conditions != null && ((IEnumerable<dynamic>)conditions).Any();
 
         private bool HasObservations(dynamic observations) =>
-            observations is System.Collections.IEnumerable enumerable && enumerable.Cast<object>().Any();
+            observations != null && ((IEnumerable<dynamic>)observations).Any();
 
-        // Placeholder methods (to be implemented)
-        private Organization TransformOrganization(dynamic orgData, string type) =>
-            new Organization
+        // Helper methods for transforming organizations and other resources
+        private Organization TransformOrganization(dynamic orgData, string type)
+        {
+            // TODO: Implement organization transformation
+            return new Organization
             {
                 Id = FhirHelper.GenerateUniqueId("Organization"),
-                Name = orgData.name?.ToString() ?? $"{type} Organization"
+                Name = TransformHelper.SafeGetString(orgData, "name")
             };
+        }
 
-        private Encounter TransformEncounter(dynamic encounterData) =>
-            new Encounter
+        private Encounter TransformEncounter(dynamic encounterData)
+        {
+            // TODO: Create Encounter model and implement transformation
+            return null;
+        }
+
+        private List<DocumentReference> TransformAttachments(dynamic attachments)
+        {
+            // TODO: Create DocumentReference model and implement transformation
+            return new List<DocumentReference>();
+        }
+
+        /// <summary>
+        /// Validates Japanese service codes for eReferral
+        /// </summary>
+        /// <param name="serviceCode">Service code to validate</param>
+        /// <param name="result">Validation result</param>
+        private void ValidateJapaneseServiceCodes(string serviceCode, ValidationResult result)
+        {
+            if (string.IsNullOrWhiteSpace(serviceCode))
             {
-                Id = FhirHelper.GenerateUniqueId("Encounter"),
-                Status = Encounter.EncounterStatus.Finished
-            };
+                result.AddWarning("Service code is empty");
+                return;
+            }
 
-        private List<DocumentReference> TransformAttachments(dynamic attachments) =>
-            new List<DocumentReference>();
+            // Check various Japanese coding systems
+            if (!IsValidMedisDcCode(serviceCode) &&
+                !IsValidJJ1017Code(serviceCode) &&
+                !IsValidJLAC10ServiceCode(serviceCode) &&
+                !IsValidJapaneseDPCCode(serviceCode) &&
+                !IsValidLoincCode(serviceCode) &&
+                !IsValidSnomedCode(serviceCode))
+            {
+                result.AddWarning($"Service code '{serviceCode}' does not match known Japanese coding systems");
+            }
+        }
 
-        // TODO: JP-CLINS eReferral Implementation Notes:
-        // 1. Implement proper Japanese service code validation (MEDIS-DC, JJ1017)
-        // 2. Add support for Japanese medical institution hierarchies
-        // 3. Include Japanese-specific urgency classifications
-        // 4. Support for Japanese insurance approval workflows
-        // 5. Add validation for Japanese practitioner qualifications
-        // 6. Implement Japanese privacy and consent requirements
-        // 7. Support for Japanese diagnostic imaging referrals
-        // 8. Include Japanese healthcare quality indicators
-        // 9. Add support for Japanese telemedicine referrals
-        // 10. Implement Japanese clinical pathway references
+        private bool IsValidMedisDcCode(string code)
+        {
+            // MEDIS-DC codes: 7-digit numeric codes
+            return !string.IsNullOrWhiteSpace(code) &&
+                   code.Length == 7 &&
+                   code.All(char.IsDigit);
+        }
+
+        private bool IsValidJJ1017Code(string code)
+        {
+            // JJ1017 codes: 7-digit numeric codes for medical procedures
+            return !string.IsNullOrWhiteSpace(code) &&
+                   code.Length == 7 &&
+                   code.All(char.IsDigit);
+        }
+
+        private bool IsValidJLAC10ServiceCode(string code)
+        {
+            // JLAC10 codes: 10-digit alphanumeric codes for laboratory tests
+            return !string.IsNullOrWhiteSpace(code) &&
+                   code.Length == 10 &&
+                   code.All(c => char.IsLetterOrDigit(c) || c == '-');
+        }
+
+        private bool IsValidJapaneseDPCCode(string code)
+        {
+            // DPC codes: 6-digit numeric codes for diagnosis procedure combinations
+            return !string.IsNullOrWhiteSpace(code) &&
+                   code.Length == 6 &&
+                   code.All(char.IsDigit);
+        }
+
+        private bool IsValidLoincCode(string code)
+        {
+            // LOINC codes: 5-6 digit numeric codes
+            return !string.IsNullOrWhiteSpace(code) &&
+                   code.Length >= 5 &&
+                   code.Length <= 6 &&
+                   code.All(char.IsDigit);
+        }
+
+        private bool IsValidSnomedCode(string code)
+        {
+            // SNOMED CT codes: 6-18 digit numeric codes
+            return !string.IsNullOrWhiteSpace(code) &&
+                   code.Length >= 6 &&
+                   code.Length <= 18 &&
+                   code.All(char.IsDigit);
+        }
     }
 }

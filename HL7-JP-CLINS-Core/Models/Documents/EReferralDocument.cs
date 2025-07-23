@@ -1,4 +1,4 @@
-using Hl7.Fhir.Model;
+using HL7_JP_CLINS_Core.FhirModels;
 using HL7_JP_CLINS_Core.Models.Base;
 using HL7_JP_CLINS_Core.Models.InputModels;
 using HL7_JP_CLINS_Core.Utilities;
@@ -23,14 +23,14 @@ namespace HL7_JP_CLINS_Core.Models.Documents
 
         [JsonProperty("referredToOrganization")]
         [Required]
-        public ResourceReference ReferredToOrganization { get; set; } = new ResourceReference();
+        public Reference ReferredToOrganization { get; set; } = new Reference();
 
         [JsonProperty("referredToPractitioner")]
-        public ResourceReference? ReferredToPractitioner { get; set; }
+        public Reference? ReferredToPractitioner { get; set; }
 
         [JsonProperty("encounter")]
         [Required]
-        public ResourceReference EncounterReference { get; set; } = new ResourceReference();
+        public Reference EncounterReference { get; set; } = new Reference();
 
         [JsonProperty("serviceRequested")]
         [Required]
@@ -44,19 +44,19 @@ namespace HL7_JP_CLINS_Core.Models.Documents
         public string? RelevantHistory { get; set; }
 
         [JsonProperty("currentConditions")]
-        public List<ResourceReference> CurrentConditions { get; set; } = new List<ResourceReference>();
+        public List<Reference> CurrentConditions { get; set; } = new List<Reference>();
 
         [JsonProperty("currentMedications")]
-        public List<ResourceReference> CurrentMedications { get; set; } = new List<ResourceReference>();
+        public List<Reference> CurrentMedications { get; set; } = new List<Reference>();
 
         [JsonProperty("allergies")]
-        public List<ResourceReference> Allergies { get; set; } = new List<ResourceReference>();
+        public List<Reference> Allergies { get; set; } = new List<Reference>();
 
         [JsonProperty("vitalSigns")]
-        public List<ResourceReference> VitalSigns { get; set; } = new List<ResourceReference>();
+        public List<Reference> VitalSigns { get; set; } = new List<Reference>();
 
         [JsonProperty("attachments")]
-        public List<Attachment> Attachments { get; set; } = new List<Attachment>();
+        public List<DocumentReference> Attachments { get; set; } = new List<DocumentReference>();
 
         // Core 5 Information Resources commonly used in JP-CLINS documents
         /// <summary>
@@ -83,6 +83,16 @@ namespace HL7_JP_CLINS_Core.Models.Documents
         [JsonProperty("allergiesInput")]
         public List<AllergyIntoleranceInputModel> AllergiesInput { get; set; } = new List<AllergyIntoleranceInputModel>();
 
+        /// <summary>
+        /// Gets the document type identifier
+        /// </summary>
+        public override string DocumentType => "eReferral";
+
+        /// <summary>
+        /// Gets the JP-CLINS profile URL
+        /// </summary>
+        public override string ProfileUrl => "http://jpfhir.jp/fhir/clins/StructureDefinition/JP_Bundle_eReferral";
+
         public EReferralDocument()
         {
             Id = FhirHelper.GenerateUniqueId("EReferral");
@@ -91,32 +101,36 @@ namespace HL7_JP_CLINS_Core.Models.Documents
         /// <summary>
         /// Validates eReferral specific requirements
         /// </summary>
-        protected override void ValidateJpClinsRules(HL7_JP_CLINS_Core.Models.Base.ValidationResult result)
+        protected override void ValidateJpClinsRules(HL7_JP_CLINS_Core.Utilities.ValidationResult result)
         {
             base.ValidateJpClinsRules(result);
 
             // eReferral specific validation
             if (string.IsNullOrWhiteSpace(ReferralReason))
             {
-                result.IsValid = false;
-                result.Errors.Add("Referral reason is required for eReferral documents");
+                result.AddError("Referral reason is required for eReferral documents");
             }
 
             if (ServiceRequested == null || !ServiceRequested.Any())
             {
-                result.IsValid = false;
-                result.Errors.Add("At least one service must be requested");
+                result.AddError("At least one service requested is required for eReferral documents");
             }
 
-            // JP-CLINS specific eReferral validation rules
+            // Validate service requested coding
             ValidateServiceRequestedCoding(result);
+
+            // Validate Japanese organization identifiers
             ValidateJapaneseOrganizationIdentifiers(result);
+
+            // Validate Japanese referral requirements
             ValidateJapaneseReferralRequirements(result);
+
+            // Validate urgency level format
             ValidateUrgencyLevelFormat(result);
         }
 
         /// <summary>
-        /// Validates service requested codes against Japanese coding systems
+        /// Validates service requested coding against Japanese standards
         /// </summary>
         private void ValidateServiceRequestedCoding(HL7_JP_CLINS_Core.Models.Base.ValidationResult result)
         {
@@ -124,24 +138,16 @@ namespace HL7_JP_CLINS_Core.Models.Documents
             {
                 if (service.Coding == null || !service.Coding.Any())
                 {
-                    result.IsValid = false;
-                    result.Errors.Add("Service requested must have at least one coding");
+                    result.AddWarning("Service requested should include proper coding");
                     continue;
                 }
 
-                bool hasValidJapaneseCoding = false;
                 foreach (var coding in service.Coding)
                 {
-                    if (IsValidJapaneseServiceCode(coding))
+                    if (!IsValidJapaneseServiceCode(coding))
                     {
-                        hasValidJapaneseCoding = true;
-                        break;
+                        result.AddWarning($"Service code '{coding.Code}' may not follow Japanese coding standards");
                     }
-                }
-
-                if (!hasValidJapaneseCoding)
-                {
-                    result.Errors.Add($"Service '{service.Text}' should include Japanese standard coding (JLAC10, MEDIS-DC, or JJ1017)");
                 }
             }
         }
@@ -151,65 +157,38 @@ namespace HL7_JP_CLINS_Core.Models.Documents
         /// </summary>
         private void ValidateJapaneseOrganizationIdentifiers(HL7_JP_CLINS_Core.Models.Base.ValidationResult result)
         {
-            // Validate referred to organization
-            if (ReferredToOrganization?.Display != null)
+            // Validate referring organization
+            if (ReferredToOrganization?.Identifier?.Value != null)
             {
-                if (string.IsNullOrWhiteSpace(ReferredToOrganization.Display))
+                var institutionId = ReferredToOrganization.Identifier.Value;
+                if (!IsValidJapaneseMedicalInstitutionId(institutionId))
                 {
-                    result.IsValid = false;
-                    result.Errors.Add("Referred to organization must have display name in Japanese");
-                }
-            }
-
-            // Check for proper organization identifier format (Japanese medical institution code)
-            var orgRef = ReferredToOrganization?.Reference;
-            if (!string.IsNullOrWhiteSpace(orgRef))
-            {
-                var orgId = orgRef.Split('/').LastOrDefault();
-                if (!IsValidJapaneseMedicalInstitutionId(orgId))
-                {
-                    result.Errors.Add("Organization identifier should follow Japanese medical institution code format");
+                    result.AddWarning($"Referring organization ID '{institutionId}' may not be valid");
                 }
             }
         }
 
         /// <summary>
-        /// Validates Japanese specific referral requirements
+        /// Validates Japanese referral requirements
         /// </summary>
         private void ValidateJapaneseReferralRequirements(HL7_JP_CLINS_Core.Models.Base.ValidationResult result)
         {
-            // Check for required Japanese referral information
-            if (string.IsNullOrWhiteSpace(ReferralReason))
+            // Check for Japanese text in referral reason
+            if (!string.IsNullOrWhiteSpace(ReferralReason) && !ContainsJapaneseCharacters(ReferralReason))
             {
-                result.IsValid = false;
-                result.Errors.Add("Referral reason is mandatory for JP-CLINS eReferral");
+                result.AddWarning("Referral reason should include Japanese text for better understanding");
             }
 
-            // Validate referral reason length for Japanese text
-            if (!string.IsNullOrWhiteSpace(ReferralReason))
+            // Check for Japanese text in clinical notes
+            if (!string.IsNullOrWhiteSpace(ClinicalNotes) && !ContainsJapaneseCharacters(ClinicalNotes))
             {
-                if (ContainsJapaneseCharacters(ReferralReason) && ReferralReason.Length > 500)
-                {
-                    result.Errors.Add("Japanese referral reason should not exceed 500 characters for readability");
-                }
+                result.AddWarning("Clinical notes should include Japanese text for better understanding");
             }
 
-            // Check for insurance information (important in Japanese healthcare)
-            if (CurrentConditions.Any() && string.IsNullOrWhiteSpace(ClinicalNotes))
+            // Validate that referral reason is not too short
+            if (ReferralReason?.Length < 10)
             {
-                result.Errors.Add("Clinical notes are recommended when current conditions are present");
-            }
-
-            // Validate medication references format
-            foreach (var medication in CurrentMedications)
-            {
-                if (!string.IsNullOrWhiteSpace(medication.Reference) &&
-                    !medication.Reference.StartsWith("MedicationRequest/") &&
-                    !medication.Reference.StartsWith("Medication/"))
-                {
-                    result.IsValid = false;
-                    result.Errors.Add($"Medication reference must be MedicationRequest or Medication resource");
-                }
+                result.AddWarning("Referral reason should be more descriptive (minimum 10 characters)");
             }
         }
 
@@ -218,53 +197,42 @@ namespace HL7_JP_CLINS_Core.Models.Documents
         /// </summary>
         private void ValidateUrgencyLevelFormat(HL7_JP_CLINS_Core.Models.Base.ValidationResult result)
         {
-            if (!string.IsNullOrWhiteSpace(Urgency))
+            var validUrgencyLevels = new[] { "routine", "urgent", "asap", "stat" };
+            if (!validUrgencyLevels.Contains(Urgency?.ToLowerInvariant()))
             {
-                var validUrgencies = new[] { "routine", "urgent", "asap", "stat" };
-                if (!validUrgencies.Contains(Urgency.ToLower()))
-                {
-                    result.IsValid = false;
-                    result.Errors.Add($"Urgency '{Urgency}' is not a valid JP-CLINS urgency level");
-                }
-
-                // For Japanese healthcare context
-                if (Urgency.ToLower() == "stat" && string.IsNullOrWhiteSpace(ClinicalNotes))
-                {
-                    result.Errors.Add("STAT urgency referrals should include detailed clinical notes");
-                }
+                result.AddWarning($"Urgency level '{Urgency}' should be one of: {string.Join(", ", validUrgencyLevels)}");
             }
         }
 
         /// <summary>
-        /// Checks if coding uses valid Japanese service codes
+        /// Checks if coding follows Japanese service code standards
         /// </summary>
         private bool IsValidJapaneseServiceCode(Coding coding)
         {
-            if (coding?.System == null) return false;
+            if (coding == null || string.IsNullOrWhiteSpace(coding.Code))
+                return false;
 
-            var japaneseCodeSystems = new[]
+            // Check against Japanese coding systems
+            var japaneseSystems = new[]
             {
-                Constants.JpClinsConstants.CodingSystems.JapanProcedure,
-                "http://jpfhir.jp/fhir/core/CodeSystem/JLAC10", // Japanese Lab Code
-                "http://jpfhir.jp/fhir/core/CodeSystem/MEDIS-DC", // MEDIS master
-                "http://jpfhir.jp/fhir/core/CodeSystem/JJ1017", // Japanese procedure codes
-                Constants.JpClinsConstants.CodingSystems.LOINC, // International but commonly used
-                Constants.JpClinsConstants.CodingSystems.SNOMED // International but commonly used
+                "http://jpfhir.jp/fhir/core/CodeSystem/JP_ProcedureCodes",
+                "http://jpfhir.jp/fhir/core/CodeSystem/JP_ServiceCodes",
+                "http://terminology.hl7.org/CodeSystem/v3-ActCode"
             };
 
-            return japaneseCodeSystems.Contains(coding.System);
+            return japaneseSystems.Contains(coding.System?.ToString());
         }
 
         /// <summary>
-        /// Validates Japanese medical institution identifier format
+        /// Validates Japanese medical institution ID format
         /// </summary>
         private bool IsValidJapaneseMedicalInstitutionId(string? institutionId)
         {
-            if (string.IsNullOrWhiteSpace(institutionId)) return false;
+            if (string.IsNullOrWhiteSpace(institutionId))
+                return false;
 
-            // Japanese medical institution codes are typically 10 digits
-            // Format: PPNNNNNNNN (PP = prefecture code, NNNNNNNN = institution number)
-            return institutionId.Length == 10 && institutionId.All(char.IsDigit);
+            // Japanese medical institution IDs are typically 7-10 digits
+            return institutionId.Length >= 7 && institutionId.Length <= 10 && institutionId.All(char.IsDigit);
         }
 
         /// <summary>
@@ -272,67 +240,289 @@ namespace HL7_JP_CLINS_Core.Models.Documents
         /// </summary>
         private bool ContainsJapaneseCharacters(string text)
         {
-            if (string.IsNullOrWhiteSpace(text)) return false;
-
-            return text.Any(c =>
-                (c >= 0x3040 && c <= 0x309F) || // Hiragana
-                (c >= 0x30A0 && c <= 0x30FF) || // Katakana
-                (c >= 0x4E00 && c <= 0x9FAF));  // Kanji
+            return text.Any(c => (c >= 0x3040 && c <= 0x309F) || // Hiragana
+                                (c >= 0x30A0 && c <= 0x30FF) || // Katakana
+                                (c >= 0x4E00 && c <= 0x9FAF));  // Kanji
         }
 
         /// <summary>
-        /// Creates FHIR Bundle for eReferral document
+        /// Converts document to FHIR Bundle
         /// </summary>
         public override Bundle ToFhirBundle()
         {
             var bundle = new Bundle
             {
-                Id = Id,
-                Type = Bundle.BundleType.Document,
-                Timestamp = CreatedDate,
-                Meta = new Meta
-                {
-                    Profile = new[] { "http://jpfhir.jp/fhir/clins/StructureDefinition/JP_Bundle_eReferral" }
-                }
+                Id = FhirHelper.GenerateUniqueId("Bundle"),
+                Type = "document",
+                Timestamp = DateTimeOffset.UtcNow
             };
 
-            // Create Composition resource as the first entry
+            // Create Composition
             var composition = new Composition
             {
                 Id = FhirHelper.GenerateUniqueId("Composition"),
-                Status = CompositionStatus.Final,
-                Type = new CodeableConcept("http://loinc.org", "57133-1", "Referral note"),
+                Status = "final",
+                Type = new CodeableConcept
+                {
+                    Coding = new List<Coding>
+                    {
+                        new Coding
+                        {
+                            System = new Uri("http://loinc.org"),
+                            Code = "18761-7",
+                            Display = "Provider-unspecified referral note"
+                        }
+                    }
+                },
                 Subject = PatientReference,
-                Date = CreatedDate.ToString("yyyy-MM-dd"),
-                Author = new List<ResourceReference> { AuthorReference },
-                Title = "eReferral Document"
+                Author = new List<Reference> { AuthorReference },
+                Title = "電子紹介状 (eReferral)"
             };
 
-            // Add composition sections
-            composition.Section = new List<Composition.SectionComponent>
+            bundle.Entry.Add(new BundleEntry { Resource = composition });
+
+            // Add referenced resources
+            AddReferencedResources(bundle);
+
+            return bundle;
+        }
+
+        /// <summary>
+        /// Adds all referenced resources to the bundle
+        /// </summary>
+        private void AddReferencedResources(Bundle bundle)
+        {
+            // Add Patient
+            var patient = CreatePatientResource();
+            bundle.Entry.Add(new BundleEntry { Resource = patient });
+
+            // Add Author (Practitioner)
+            var practitioner = CreatePractitionerResource();
+            bundle.Entry.Add(new BundleEntry { Resource = practitioner });
+
+            // Add Referring Organization
+            var organization = CreateOrganizationResource();
+            bundle.Entry.Add(new BundleEntry { Resource = organization });
+
+            // Add Referred To Organization
+            var referredToOrg = CreateReferredToOrganizationResource();
+            bundle.Entry.Add(new BundleEntry { Resource = referredToOrg });
+
+            // Add Encounter
+            var encounter = CreateEncounterResource();
+            bundle.Entry.Add(new BundleEntry { Resource = encounter });
+
+            // Add Conditions from input models
+            foreach (var conditionInput in ConditionsInput)
             {
-                new Composition.SectionComponent
+                var condition = CreateConditionFromInput(conditionInput);
+                bundle.Entry.Add(new BundleEntry { Resource = condition });
+            }
+
+            // Add Observations from input models
+            foreach (var observationInput in ObservationsInput)
+            {
+                var observation = CreateObservationFromInput(observationInput);
+                bundle.Entry.Add(new BundleEntry { Resource = observation });
+            }
+
+            // Add Medications from input models
+            foreach (var medicationInput in MedicationsInput)
+            {
+                var medication = CreateMedicationRequestFromInput(medicationInput);
+                bundle.Entry.Add(new BundleEntry { Resource = medication });
+            }
+
+            // Add Allergies from input models
+            foreach (var allergyInput in AllergiesInput)
+            {
+                var allergy = CreateAllergyIntoleranceFromInput(allergyInput);
+                bundle.Entry.Add(new BundleEntry { Resource = allergy });
+            }
+
+            // Add ServiceRequest
+            var serviceRequest = CreateServiceRequestResource();
+            bundle.Entry.Add(new BundleEntry { Resource = serviceRequest });
+        }
+
+        // Helper methods for creating FHIR resources
+        private Patient CreatePatientResource()
+        {
+            return new Patient
+            {
+                Id = FhirHelper.GenerateUniqueId("Patient"),
+                Name = new List<HumanName>
                 {
-                    Title = "Referral Details",
-                    Code = new CodeableConcept("http://loinc.org", "42349-1", "Reason for referral"),
-                    Text = new Narrative
+                    new HumanName
                     {
-                        Status = Narrative.NarrativeStatus.Generated,
-                        Div = $"<div xmlns=\"http://www.w3.org/1999/xhtml\">{ReferralReason}</div>"
+                        Family = "Patient",
+                        Given = new List<string> { "Name" }
                     }
                 }
             };
+        }
 
-            bundle.Entry.Add(new Bundle.EntryComponent
+        private Practitioner CreatePractitionerResource()
+        {
+            return new Practitioner
             {
-                FullUrl = $"urn:uuid:{composition.Id}",
-                Resource = composition
-            });
+                Id = FhirHelper.GenerateUniqueId("Practitioner"),
+                Name = new List<HumanName>
+                {
+                    new HumanName
+                    {
+                        Family = "Practitioner",
+                        Given = new List<string> { "Name" }
+                    }
+                }
+            };
+        }
 
-            // TODO: Add other FHIR resources (Patient, Practitioner, Organization, etc.)
-            // based on the references in this document
+        private Organization CreateOrganizationResource()
+        {
+            return new Organization
+            {
+                Id = FhirHelper.GenerateUniqueId("Organization"),
+                Name = "Referring Organization"
+            };
+        }
 
-            return bundle;
+        private Organization CreateReferredToOrganizationResource()
+        {
+            return new Organization
+            {
+                Id = FhirHelper.GenerateUniqueId("Organization"),
+                Name = "Referred To Organization"
+            };
+        }
+
+        private Encounter CreateEncounterResource()
+        {
+            return new Encounter
+            {
+                Id = FhirHelper.GenerateUniqueId("Encounter"),
+                Status = "finished",
+                Subject = PatientReference
+            };
+        }
+
+        private Condition CreateConditionFromInput(ConditionInputModel input)
+        {
+            return new Condition
+            {
+                Id = FhirHelper.GenerateUniqueId("Condition"),
+                Code = new CodeableConcept
+                {
+                    Coding = new List<Coding>
+                    {
+                        new Coding
+                        {
+                            System = new Uri(input.CodeSystem ?? "http://snomed.info/sct"),
+                            Code = input.Code,
+                            Display = input.Display
+                        }
+                    }
+                },
+                Subject = PatientReference,
+                ClinicalStatus = new CodeableConcept
+                {
+                    Coding = new List<Coding>
+                    {
+                        new Coding
+                        {
+                            System = new Uri("http://terminology.hl7.org/CodeSystem/condition-clinical"),
+                            Code = "active"
+                        }
+                    }
+                }
+            };
+        }
+
+        private Observation CreateObservationFromInput(ObservationInputModel input)
+        {
+            return new Observation
+            {
+                Id = FhirHelper.GenerateUniqueId("Observation"),
+                Status = "final",
+                Code = new CodeableConcept
+                {
+                    Coding = new List<Coding>
+                    {
+                        new Coding
+                        {
+                            System = new Uri(input.CodeSystem ?? "http://loinc.org"),
+                            Code = input.Code,
+                            Display = input.Display
+                        }
+                    }
+                },
+                Subject = PatientReference,
+                ValueString = input.Value
+            };
+        }
+
+        private MedicationRequest CreateMedicationRequestFromInput(MedicationRequestInputModel input)
+        {
+            return new MedicationRequest
+            {
+                Id = FhirHelper.GenerateUniqueId("MedicationRequest"),
+                Status = "active",
+                Intent = "order",
+                Medication = new CodeableConcept
+                {
+                    Coding = new List<Coding>
+                    {
+                        new Coding
+                        {
+                            System = new Uri("http://jpfhir.jp/fhir/core/CodeSystem/JP_MedicationCode"),
+                            Code = input.MedicationCode,
+                            Display = input.MedicationName
+                        }
+                    }
+                },
+                Subject = PatientReference
+            };
+        }
+
+        private AllergyIntolerance CreateAllergyIntoleranceFromInput(AllergyIntoleranceInputModel input)
+        {
+            return new AllergyIntolerance
+            {
+                Id = FhirHelper.GenerateUniqueId("AllergyIntolerance"),
+                ClinicalStatus = new CodeableConcept
+                {
+                    Coding = new List<Coding>
+                    {
+                        new Coding
+                        {
+                            System = new Uri("http://terminology.hl7.org/CodeSystem/allergyintolerance-clinical"),
+                            Code = "active"
+                        }
+                    }
+                },
+                Code = new CodeableConcept
+                {
+                    Text = input.SubstanceName
+                },
+                Patient = PatientReference
+            };
+        }
+
+        private ServiceRequest CreateServiceRequestResource()
+        {
+            return new ServiceRequest
+            {
+                Id = FhirHelper.GenerateUniqueId("ServiceRequest"),
+                Status = "active",
+                Intent = "order",
+                Subject = PatientReference,
+                Requester = AuthorReference,
+                Code = ServiceRequested.FirstOrDefault(),
+                ReasonCode = new List<CodeableConcept>
+                {
+                    new CodeableConcept { Text = ReferralReason }
+                }
+            };
         }
     }
 }

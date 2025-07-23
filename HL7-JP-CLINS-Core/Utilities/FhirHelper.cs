@@ -87,11 +87,11 @@ namespace HL7_JP_CLINS_Core.Utilities
                 result.Errors.Add("Resource must have an ID");
             }
 
-            // TODO: Add more comprehensive FHIR validation
-            // - Profile validation
-            // - Cardinality checks
-            // - Required elements validation
-            // - Reference integrity
+            // Comprehensive FHIR validation
+            ValidateResourceMetadata(resource, result);
+            ValidateResourceReferences(resource, result);
+            ValidateResourceSpecificRules(resource, result);
+            ValidateJpClinsCompliance(resource, result);
 
             return result;
         }
@@ -860,6 +860,379 @@ namespace HL7_JP_CLINS_Core.Utilities
             var searchText = $"{medicationCode} {medicationName}".ToLower();
             return controlledSubstancePatterns.Any(pattern =>
                 searchText.Contains(pattern, StringComparison.OrdinalIgnoreCase));
+        }
+
+        /// <summary>
+        /// Validates resource metadata including profile and version information
+        /// </summary>
+        private static void ValidateResourceMetadata(Resource resource, ValidationResult result)
+        {
+            if (resource.Meta != null)
+            {
+                // Validate profiles
+                if (resource.Meta.Profile?.Any() == true)
+                {
+                    foreach (var profile in resource.Meta.Profile)
+                    {
+                        if (!IsValidUrl(profile))
+                        {
+                            result.AddError($"Invalid profile URL: {profile}");
+                        }
+                    }
+                }
+
+                // Validate version ID
+                if (!string.IsNullOrWhiteSpace(resource.Meta.VersionId) && !IsValidVersionId(resource.Meta.VersionId))
+                {
+                    result.AddError($"Invalid version ID format: {resource.Meta.VersionId}");
+                }
+
+                // Validate last updated timestamp
+                if (resource.Meta.LastUpdated.HasValue && resource.Meta.LastUpdated > DateTimeOffset.UtcNow)
+                {
+                    result.AddError("LastUpdated timestamp cannot be in the future");
+                }
+            }
+        }
+
+        /// <summary>
+        /// Validates resource references integrity
+        /// </summary>
+        private static void ValidateResourceReferences(Resource resource, ValidationResult result)
+        {
+            // Get all ResourceReference properties using reflection
+            var properties = resource.GetType().GetProperties()
+                .Where(p => typeof(ResourceReference).IsAssignableFrom(p.PropertyType) ||
+                           (p.PropertyType.IsGenericType &&
+                            p.PropertyType.GetGenericArguments().Any(t => typeof(ResourceReference).IsAssignableFrom(t))));
+
+            foreach (var property in properties)
+            {
+                var value = property.GetValue(resource);
+                if (value is ResourceReference reference)
+                {
+                    ValidateResourceReference(reference, result);
+                }
+                else if (value is IEnumerable<ResourceReference> references)
+                {
+                    foreach (var refItem in references)
+                    {
+                        ValidateResourceReference(refItem, result);
+                    }
+                }
+            }
+        }
+
+        /// <summary>
+        /// Validates specific rules for different resource types
+        /// </summary>
+        private static void ValidateResourceSpecificRules(Resource resource, ValidationResult result)
+        {
+            switch (resource)
+            {
+                case Patient patient:
+                    ValidatePatientSpecificRules(patient, result);
+                    break;
+                case Practitioner practitioner:
+                    ValidatePractitionerSpecificRules(practitioner, result);
+                    break;
+                case Organization organization:
+                    ValidateOrganizationSpecificRules(organization, result);
+                    break;
+                case Bundle bundle:
+                    ValidateBundleSpecificRules(bundle, result);
+                    break;
+                case Composition composition:
+                    ValidateCompositionSpecificRules(composition, result);
+                    break;
+            }
+        }
+
+        /// <summary>
+        /// Validates JP-CLINS specific compliance rules
+        /// </summary>
+        private static void ValidateJpClinsCompliance(Resource resource, ValidationResult result)
+        {
+            // Check for JP-CLINS specific profiles
+            if (resource.Meta?.Profile?.Any() == true)
+            {
+                var hasJpClinsProfile = resource.Meta.Profile.Any(p => p.Contains("jpfhir.jp/fhir/clins"));
+                if (!hasJpClinsProfile)
+                {
+                    result.AddWarning("Resource should use JP-CLINS profiles for compliance");
+                }
+            }
+
+            // Validate Japanese specific content based on resource type
+            switch (resource)
+            {
+                case Patient patient:
+                    ValidateJapanesePatientContent(patient, result);
+                    break;
+                case Practitioner practitioner:
+                    ValidateJapanesePractitionerContent(practitioner, result);
+                    break;
+                case Organization organization:
+                    ValidateJapaneseOrganizationContent(organization, result);
+                    break;
+            }
+        }
+
+        // Helper validation methods
+        private static bool IsValidUrl(string url)
+        {
+            return Uri.TryCreate(url, UriKind.Absolute, out _);
+        }
+
+        private static bool IsValidVersionId(string versionId)
+        {
+            return !string.IsNullOrWhiteSpace(versionId) && versionId.All(char.IsDigit);
+        }
+
+        private static void ValidateResourceReference(ResourceReference reference, ValidationResult result)
+        {
+            if (reference == null) return;
+
+            if (!string.IsNullOrWhiteSpace(reference.Reference))
+            {
+                // Validate reference format (ResourceType/id or #id for contained resources)
+                if (!reference.Reference.Contains('/') && !reference.Reference.StartsWith('#'))
+                {
+                    result.AddError($"Invalid reference format: {reference.Reference}");
+                }
+            }
+            else if (string.IsNullOrWhiteSpace(reference.Display))
+            {
+                result.AddWarning("Resource reference should have either reference or display");
+            }
+        }
+
+        private static void ValidatePatientSpecificRules(Patient patient, ValidationResult result)
+        {
+            if (patient.Active == null)
+            {
+                result.AddWarning("Patient.active should be specified");
+            }
+
+            if (patient.Name == null || !patient.Name.Any())
+            {
+                result.AddError("Patient must have at least one name");
+            }
+
+            if (patient.Gender == null)
+            {
+                result.AddWarning("Patient.gender should be specified");
+            }
+        }
+
+        private static void ValidatePractitionerSpecificRules(Practitioner practitioner, ValidationResult result)
+        {
+            if (practitioner.Name == null || !practitioner.Name.Any())
+            {
+                result.AddError("Practitioner must have at least one name");
+            }
+
+            if (practitioner.Identifier == null || !practitioner.Identifier.Any())
+            {
+                result.AddWarning("Practitioner should have identifiers (e.g., medical license)");
+            }
+        }
+
+        private static void ValidateOrganizationSpecificRules(Organization organization, ValidationResult result)
+        {
+            if (string.IsNullOrWhiteSpace(organization.Name))
+            {
+                result.AddError("Organization must have a name");
+            }
+
+            if (organization.Active == null)
+            {
+                result.AddWarning("Organization.active should be specified");
+            }
+        }
+
+        private static void ValidateBundleSpecificRules(Bundle bundle, ValidationResult result)
+        {
+            if (bundle.Type == null)
+            {
+                result.AddError("Bundle must have a type");
+            }
+
+            if (bundle.Entry == null || !bundle.Entry.Any())
+            {
+                result.AddWarning("Bundle has no entries");
+            }
+        }
+
+        private static void ValidateCompositionSpecificRules(Composition composition, ValidationResult result)
+        {
+            if (composition.Status == null)
+            {
+                result.AddError("Composition must have a status");
+            }
+
+            if (composition.Type == null)
+            {
+                result.AddError("Composition must have a type");
+            }
+
+            if (composition.Subject == null)
+            {
+                result.AddError("Composition must have a subject");
+            }
+        }
+
+        private static void ValidateJapanesePatientContent(Patient patient, ValidationResult result)
+        {
+            // Validate Japanese identifiers
+            if (patient.Identifier?.Any() == true)
+            {
+                foreach (var identifier in patient.Identifier)
+                {
+                    if (identifier.System?.Contains("jpfhir.jp") == true ||
+                        identifier.System?.Contains("healthcare.jp") == true)
+                    {
+                        ValidateJapaneseIdentifierValue(identifier.Value, identifier.System, result);
+                    }
+                }
+            }
+
+            // Validate Japanese names (Kanji/Kana)
+            if (patient.Name?.Any() == true)
+            {
+                foreach (var name in patient.Name)
+                {
+                    if (name.Family != null || name.Given?.Any() == true)
+                    {
+                        ValidateJapaneseName(name, result);
+                    }
+                }
+            }
+        }
+
+        private static void ValidateJapanesePractitionerContent(Practitioner practitioner, ValidationResult result)
+        {
+            // Validate medical license numbers
+            if (practitioner.Identifier?.Any() == true)
+            {
+                var hasValidLicense = false;
+                foreach (var identifier in practitioner.Identifier)
+                {
+                    if (IsJapaneseMedicalLicenseSystem(identifier.System))
+                    {
+                        hasValidLicense = ValidateMedicalLicenseNumber(identifier.Value) || hasValidLicense;
+                    }
+                }
+
+                if (!hasValidLicense)
+                {
+                    result.AddWarning("Practitioner should have valid Japanese medical license identifier");
+                }
+            }
+        }
+
+        private static void ValidateJapaneseOrganizationContent(Organization organization, ValidationResult result)
+        {
+            // Validate medical institution codes
+            if (organization.Identifier?.Any() == true)
+            {
+                foreach (var identifier in organization.Identifier)
+                {
+                    if (IsJapaneseMedicalInstitutionSystem(identifier.System))
+                    {
+                        ValidateJapaneseMedicalInstitutionCode(identifier.Value, result);
+                    }
+                }
+            }
+        }
+
+        private static void ValidateJapaneseIdentifierValue(string value, string system, ValidationResult result)
+        {
+            if (string.IsNullOrWhiteSpace(value)) return;
+
+            // Add specific validation based on Japanese identifier systems
+            if (system?.Contains("patient-id") == true)
+            {
+                // Validate Japanese patient ID format
+                if (!IsValidJapanesePatientId(value))
+                {
+                    result.AddWarning($"Patient ID '{value}' may not follow Japanese healthcare standards");
+                }
+            }
+        }
+
+        private static void ValidateJapaneseName(HumanName name, ValidationResult result)
+        {
+            // Check for Japanese characters in names
+            var fullName = $"{name.Family} {string.Join(" ", name.Given ?? new List<string>())}";
+
+            if (ContainsJapaneseCharacters(fullName))
+            {
+                // For Japanese names, check if both Kanji and Kana representations exist
+                var hasKanjiReading = name.Extension?.Any(e =>
+                    e.Url == "http://hl7.org/fhir/StructureDefinition/iso21090-EN-representation" &&
+                    e.Value?.ToString() == "IDE") == true;
+
+                var hasKanaReading = name.Extension?.Any(e =>
+                    e.Url == "http://hl7.org/fhir/StructureDefinition/iso21090-EN-representation" &&
+                    e.Value?.ToString() == "SYL") == true;
+
+                if (!hasKanaReading)
+                {
+                    result.AddWarning("Japanese names should include Kana (furigana) reading");
+                }
+            }
+        }
+
+        private static bool IsJapaneseMedicalLicenseSystem(string system)
+        {
+            if (string.IsNullOrWhiteSpace(system)) return false;
+
+            return system.Contains("jpfhir.jp") ||
+                   system.Contains("medical-license") ||
+                   system.Contains("healthcare.jp");
+        }
+
+        private static bool IsJapaneseMedicalInstitutionSystem(string system)
+        {
+            if (string.IsNullOrWhiteSpace(system)) return false;
+
+            return system.Contains("jpfhir.jp") ||
+                   system.Contains("medical-institution") ||
+                   system.Contains("healthcare.jp");
+        }
+
+        private static void ValidateJapaneseMedicalInstitutionCode(string code, ValidationResult result)
+        {
+            if (string.IsNullOrWhiteSpace(code)) return;
+
+            // Japanese medical institution codes are typically 10 digits
+            if (code.Length == 10 && code.All(char.IsDigit))
+            {
+                // Valid format
+                return;
+            }
+
+            result.AddWarning($"Medical institution code '{code}' may not follow Japanese format (10 digits)");
+        }
+
+        private static bool IsValidJapanesePatientId(string patientId)
+        {
+            if (string.IsNullOrWhiteSpace(patientId)) return false;
+
+            // Japanese patient IDs are typically alphanumeric with specific patterns
+            return patientId.Length >= 6 && patientId.Length <= 20 &&
+                   patientId.All(c => char.IsLetterOrDigit(c) || c == '-');
+        }
+
+        private static bool ContainsJapaneseCharacters(string text)
+        {
+            if (string.IsNullOrWhiteSpace(text)) return false;
+
+            return text.Any(c =>
+                (c >= 0x3040 && c <= 0x309F) || // Hiragana
+                (c >= 0x30A0 && c <= 0x30FF) || // Katakana
+                (c >= 0x4E00 && c <= 0x9FAF));  // Kanji
         }
     }
 

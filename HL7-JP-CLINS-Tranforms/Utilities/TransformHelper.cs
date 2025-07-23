@@ -325,7 +325,7 @@ namespace HL7_JP_CLINS_Tranforms.Utilities
         /// <summary>
         /// Converts Japanese era date to Gregorian date
         /// </summary>
-        /// <param name="eraDate">Japanese era date (e.g., "令和3年4月1日")</param>
+        /// <param name="eraDate">Japanese era date (e.g., "令和3年4月1日", "R3.4.1", "平成30年12月31日")</param>
         /// <returns>Gregorian DateTime or null if conversion fails</returns>
         public static DateTime? ConvertJapaneseEraToGregorian(string eraDate)
         {
@@ -334,16 +334,218 @@ namespace HL7_JP_CLINS_Tranforms.Utilities
 
             try
             {
-                // This is a simplified implementation
-                // A full implementation would need comprehensive era conversion logic
+                // Define Japanese eras with their start dates
+                var eras = new Dictionary<string, (DateTime startDate, string[] names)>
+                {
+                    // Reiwa era (令和) - started May 1, 2019
+                    { "R", (new DateTime(2019, 5, 1), new[] { "令和", "れいわ", "Reiwa", "R" }) },
+                    
+                    // Heisei era (平成) - started January 8, 1989 to April 30, 2019
+                    { "H", (new DateTime(1989, 1, 8), new[] { "平成", "へいせい", "Heisei", "H" }) },
+                    
+                    // Showa era (昭和) - started December 25, 1926 to January 7, 1989
+                    { "S", (new DateTime(1926, 12, 25), new[] { "昭和", "しょうわ", "Showa", "S" }) },
+                    
+                    // Taisho era (大正) - started July 30, 1912 to December 25, 1926
+                    { "T", (new DateTime(1912, 7, 30), new[] { "大正", "たいしょう", "Taisho", "T" }) },
+                    
+                    // Meiji era (明治) - started October 23, 1868 to July 30, 1912
+                    { "M", (new DateTime(1868, 10, 23), new[] { "明治", "めいじ", "Meiji", "M" }) }
+                };
 
-                // For now, return null and let calling code handle standard date parsing
-                // TODO: Implement full Japanese era date conversion
+                // Clean and normalize the input
+                var cleanDate = eraDate.Trim()
+                    .Replace("年", "/")
+                    .Replace("月", "/")
+                    .Replace("日", "")
+                    .Replace(".", "/")
+                    .Replace("-", "/");
+
+                // Try to identify the era and extract year, month, day
+                foreach (var era in eras)
+                {
+                    var eraKey = era.Key;
+                    var eraData = era.Value;
+
+                    foreach (var eraName in eraData.names)
+                    {
+                        if (cleanDate.StartsWith(eraName) || cleanDate.StartsWith(eraKey))
+                        {
+                            // Remove era name/symbol from the beginning
+                            var datePart = cleanDate.Substring(eraName.Length);
+                            if (cleanDate.StartsWith(eraKey) && eraKey.Length == 1)
+                            {
+                                datePart = cleanDate.Substring(eraKey.Length);
+                            }
+
+                            // Parse the remaining date part
+                            var dateComponents = datePart.Split(new[] { '/', '-', '.' }, StringSplitOptions.RemoveEmptyEntries);
+
+                            if (dateComponents.Length >= 3)
+                            {
+                                if (int.TryParse(dateComponents[0], out int eraYear) &&
+                                    int.TryParse(dateComponents[1], out int month) &&
+                                    int.TryParse(dateComponents[2], out int day))
+                                {
+                                    // Convert era year to Gregorian year
+                                    var gregorianYear = eraData.startDate.Year + eraYear - 1;
+
+                                    // Handle era year 1 (元年)
+                                    if (eraYear == 1 || dateComponents[0] == "元")
+                                    {
+                                        gregorianYear = eraData.startDate.Year;
+                                    }
+
+                                    // Validate the date components
+                                    if (month >= 1 && month <= 12 && day >= 1 && day <= 31)
+                                    {
+                                        try
+                                        {
+                                            var gregorianDate = new DateTime(gregorianYear, month, day);
+
+                                            // Validate that the date is within the era bounds
+                                            if (gregorianDate >= eraData.startDate)
+                                            {
+                                                // Check if it's not beyond the era's end date
+                                                var nextEra = eras.Values.FirstOrDefault(e => e.startDate > eraData.startDate);
+                                                if (nextEra.startDate == default || gregorianDate < nextEra.startDate)
+                                                {
+                                                    return gregorianDate;
+                                                }
+                                            }
+                                        }
+                                        catch (ArgumentOutOfRangeException)
+                                        {
+                                            // Invalid date (e.g., Feb 30)
+                                            continue;
+                                        }
+                                    }
+                                }
+                            }
+                            else if (dateComponents.Length == 2)
+                            {
+                                // Handle year/month only format
+                                if (int.TryParse(dateComponents[0], out int eraYear) &&
+                                    int.TryParse(dateComponents[1], out int month))
+                                {
+                                    var gregorianYear = eraData.startDate.Year + eraYear - 1;
+                                    if (eraYear == 1 || dateComponents[0] == "元")
+                                    {
+                                        gregorianYear = eraData.startDate.Year;
+                                    }
+
+                                    if (month >= 1 && month <= 12)
+                                    {
+                                        try
+                                        {
+                                            return new DateTime(gregorianYear, month, 1);
+                                        }
+                                        catch (ArgumentOutOfRangeException)
+                                        {
+                                            continue;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Try parsing common Japanese date formats without era
+                if (TryParseJapaneseNumericDate(cleanDate, out DateTime numericDate))
+                {
+                    return numericDate;
+                }
+
                 return null;
+            }
+            catch (Exception)
+            {
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// Tries to parse Japanese numeric date formats
+        /// </summary>
+        private static bool TryParseJapaneseNumericDate(string dateString, out DateTime result)
+        {
+            result = default;
+
+            try
+            {
+                // Handle formats like "2021/4/1", "2021-04-01", etc.
+                var parts = dateString.Split(new[] { '/', '-', '.' }, StringSplitOptions.RemoveEmptyEntries);
+
+                if (parts.Length == 3 &&
+                    int.TryParse(parts[0], out int year) &&
+                    int.TryParse(parts[1], out int month) &&
+                    int.TryParse(parts[2], out int day))
+                {
+                    if (year >= 1868 && year <= DateTime.Now.Year + 10 && // Reasonable year range
+                        month >= 1 && month <= 12 &&
+                        day >= 1 && day <= 31)
+                    {
+                        result = new DateTime(year, month, day);
+                        return true;
+                    }
+                }
+
+                return false;
             }
             catch
             {
-                return null;
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Converts Gregorian date to Japanese era format
+        /// </summary>
+        /// <param name="gregorianDate">Gregorian date</param>
+        /// <param name="useKanji">Whether to use Kanji era names (default: true)</param>
+        /// <returns>Japanese era date string</returns>
+        public static string ConvertGregorianToJapaneseEra(DateTime gregorianDate, bool useKanji = true)
+        {
+            try
+            {
+                // Define eras in reverse chronological order for easier lookup
+                var eras = new[]
+                {
+                    new { Start = new DateTime(2019, 5, 1), KanjiName = "令和", RomajiName = "Reiwa", Symbol = "R" },
+                    new { Start = new DateTime(1989, 1, 8), KanjiName = "平成", RomajiName = "Heisei", Symbol = "H" },
+                    new { Start = new DateTime(1926, 12, 25), KanjiName = "昭和", RomajiName = "Showa", Symbol = "S" },
+                    new { Start = new DateTime(1912, 7, 30), KanjiName = "大正", RomajiName = "Taisho", Symbol = "T" },
+                    new { Start = new DateTime(1868, 10, 23), KanjiName = "明治", RomajiName = "Meiji", Symbol = "M" }
+                };
+
+                foreach (var era in eras)
+                {
+                    if (gregorianDate >= era.Start)
+                    {
+                        var eraYear = gregorianDate.Year - era.Start.Year + 1;
+                        var eraName = useKanji ? era.KanjiName : era.RomajiName;
+
+                        // Use 元年 (gannen) for the first year of an era in Kanji format
+                        var yearText = (eraYear == 1 && useKanji) ? "元" : eraYear.ToString();
+
+                        if (useKanji)
+                        {
+                            return $"{eraName}{yearText}年{gregorianDate.Month}月{gregorianDate.Day}日";
+                        }
+                        else
+                        {
+                            return $"{eraName} {eraYear}.{gregorianDate.Month:D2}.{gregorianDate.Day:D2}";
+                        }
+                    }
+                }
+
+                // Fallback for dates before Meiji era
+                return gregorianDate.ToString("yyyy年M月d日");
+            }
+            catch
+            {
+                return gregorianDate.ToString("yyyy-MM-dd");
             }
         }
 

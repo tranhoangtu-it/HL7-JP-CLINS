@@ -1,4 +1,5 @@
-using Hl7.Fhir.Model;
+using HL7_JP_CLINS_Core.FhirModels;
+using HL7_JP_CLINS_Core.FhirModels.Base;
 using HL7_JP_CLINS_Core.Utilities;
 
 namespace HL7_JP_CLINS_Tranforms.Interfaces
@@ -9,7 +10,7 @@ namespace HL7_JP_CLINS_Tranforms.Interfaces
     /// </summary>
     /// <typeparam name="TInput">Type of input data (hospital source data)</typeparam>
     /// <typeparam name="TOutput">Type of output FHIR resource</typeparam>
-    public interface ITransformer<in TInput, out TOutput> where TOutput : Resource
+    public interface ITransformer<in TInput, out TOutput> where TOutput : FhirResource
     {
         /// <summary>
         /// Transforms hospital source data into JP-CLINS compliant FHIR resources
@@ -50,6 +51,4 @@ namespace HL7_JP_CLINS_Tranforms.Interfaces
         /// <returns>FHIR Bundle containing Composition and all referenced resources</returns>
         new Bundle Transform(TInput input);
     }
-
-
 }

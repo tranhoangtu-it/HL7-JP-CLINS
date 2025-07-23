@@ -700,8 +700,8 @@ namespace HL7_JP_CLINS_Tranforms.Transformers
                 ObservationCodeSystem = "urn:oid:1.2.392.200119.4.504", // JLAC10
                 ObservationName = labData.testName?.ToString() ?? "",
                 Status = "final",
-                ValueQuantity = labData.value?.ToString(),
-                Unit = labData.unit?.ToString(),
+                ValueQuantity = TransformHelper.SafeGetString(labData, "value"),
+                Unit = TransformHelper.SafeGetString(labData, "unit"),
                 Category = "laboratory"
             };
 

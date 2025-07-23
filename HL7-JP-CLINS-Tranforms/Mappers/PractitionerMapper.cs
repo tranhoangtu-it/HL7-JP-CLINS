@@ -127,7 +127,7 @@ namespace HL7_JP_CLINS_Tranforms.Mappers
                     Use = HumanName.NameUse.Official,
                     Family = TransformHelper.SafeGetString(practitionerData, "familyName"),
                     Given = !string.IsNullOrWhiteSpace(TransformHelper.SafeGetString(practitionerData, "givenName"))
-                        ? new[] { TransformHelper.SafeGetString(practitionerData, "givenName") }.Cast<string>()
+                        ? (IEnumerable<string>)new[] { TransformHelper.SafeGetString(practitionerData, "givenName") }
                         : null
                 };
 
@@ -135,7 +135,7 @@ namespace HL7_JP_CLINS_Tranforms.Mappers
                 var title = TransformHelper.SafeGetString(practitionerData, "title");
                 if (!string.IsNullOrWhiteSpace(title))
                 {
-                    officialName.Prefix = new[] { title };
+                    officialName.Prefix = (IEnumerable<string>)new[] { title };
                 }
 
                 practitioner.Name.Add(officialName);
@@ -153,8 +153,8 @@ namespace HL7_JP_CLINS_Tranforms.Mappers
                     },
                     Family = TransformHelper.SafeGetString(practitionerData, "familyNameKana"),
                     Given = !string.IsNullOrWhiteSpace(TransformHelper.SafeGetString(practitionerData, "givenNameKana"))
-        ? new[] { TransformHelper.SafeGetString(practitionerData, "givenNameKana") }.Cast<string>()
-        : null
+                        ? (IEnumerable<string>)new[] { TransformHelper.SafeGetString(practitionerData, "givenNameKana") }
+                        : null
                 };
                 practitioner.Name.Add(phoneticName);
             }
@@ -202,7 +202,7 @@ namespace HL7_JP_CLINS_Tranforms.Mappers
                 {
                     foreach (var specialty in specialtiesArray)
                     {
-                        var specialtyCode = specialty.ToString();
+                        var specialtyCode = TransformHelper.SafeGetString(specialty, "code", specialty.ToString() ?? "");
                         var specialtyQualification = new Practitioner.QualificationComponent
                         {
                             Code = MapJapaneseSpecialty(specialtyCode),

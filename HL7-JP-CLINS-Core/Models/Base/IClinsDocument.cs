@@ -1,4 +1,5 @@
-using Hl7.Fhir.Model;
+using HL7_JP_CLINS_Core.FhirModels;
+using HL7_JP_CLINS_Core.Utilities;
 using System.ComponentModel.DataAnnotations;
 
 namespace HL7_JP_CLINS_Core.Models.Base
@@ -37,28 +38,38 @@ namespace HL7_JP_CLINS_Core.Models.Base
         /// <summary>
         /// Patient reference for this document
         /// </summary>
-        ResourceReference PatientReference { get; set; }
+        Reference PatientReference { get; set; }
 
         /// <summary>
         /// Practitioner who created/authored the document
         /// </summary>
-        ResourceReference AuthorReference { get; set; }
+        Reference AuthorReference { get; set; }
 
         /// <summary>
         /// Organization where the document was created
         /// </summary>
-        ResourceReference OrganizationReference { get; set; }
+        Reference OrganizationReference { get; set; }
 
         /// <summary>
         /// Validates the document according to JP-CLINS rules
         /// </summary>
         /// <returns>Validation result with any errors</returns>
-        ValidationResult Validate();
+        HL7_JP_CLINS_Core.Utilities.ValidationResult Validate();
 
         /// <summary>
         /// Converts the document to FHIR Bundle format
         /// </summary>
         /// <returns>FHIR Bundle representation</returns>
         Bundle ToFhirBundle();
+
+        /// <summary>
+        /// Gets the document type identifier
+        /// </summary>
+        string DocumentType { get; }
+
+        /// <summary>
+        /// Gets the JP-CLINS profile URL
+        /// </summary>
+        string ProfileUrl { get; }
     }
 }

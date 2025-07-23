@@ -536,9 +536,294 @@ namespace HL7_JP_CLINS_Core.Models.Documents
                 Resource = composition
             });
 
-            // TODO: Add other FHIR resources based on the document content
+            // Add referenced resources to the bundle
+            AddReferencedResources(bundle);
 
             return bundle;
+        }
+
+        /// <summary>
+        /// Adds referenced FHIR resources to the bundle based on document content
+        /// </summary>
+        private void AddReferencedResources(Bundle bundle)
+        {
+            // Add Patient resource
+            if (PatientReference?.Reference != null)
+            {
+                var patient = CreatePatientResource();
+                bundle.Entry.Add(new Bundle.EntryComponent
+                {
+                    FullUrl = PatientReference.Reference.StartsWith("urn:uuid:") ? PatientReference.Reference : $"urn:uuid:{patient.Id}",
+                    Resource = patient
+                });
+            }
+
+            // Add examining physician
+            if (ExaminingPhysician?.Reference != null)
+            {
+                var practitioner = CreatePractitionerResource();
+                bundle.Entry.Add(new Bundle.EntryComponent
+                {
+                    FullUrl = ExaminingPhysician.Reference.StartsWith("urn:uuid:") ? ExaminingPhysician.Reference : $"urn:uuid:{practitioner.Id}",
+                    Resource = practitioner
+                });
+            }
+
+            // Add organization
+            if (OrganizationReference?.Reference != null)
+            {
+                var organization = CreateOrganizationResource();
+                bundle.Entry.Add(new Bundle.EntryComponent
+                {
+                    FullUrl = OrganizationReference.Reference.StartsWith("urn:uuid:") ? OrganizationReference.Reference : $"urn:uuid:{organization.Id}",
+                    Resource = organization
+                });
+            }
+
+            // Add checkup encounter
+            if (EncounterReference?.Reference != null)
+            {
+                var encounter = CreateCheckupEncounter();
+                bundle.Entry.Add(new Bundle.EntryComponent
+                {
+                    FullUrl = EncounterReference.Reference.StartsWith("urn:uuid:") ? EncounterReference.Reference : $"urn:uuid:{encounter.Id}",
+                    Resource = encounter
+                });
+            }
+
+            // Add input model resources
+            foreach (var conditionInput in ConditionsInput)
+            {
+                var condition = CreateConditionFromInput(conditionInput);
+                bundle.Entry.Add(new Bundle.EntryComponent
+                {
+                    FullUrl = $"urn:uuid:{condition.Id}",
+                    Resource = condition
+                });
+            }
+
+            foreach (var observationInput in ObservationsInput)
+            {
+                var observation = CreateObservationFromInput(observationInput);
+                bundle.Entry.Add(new Bundle.EntryComponent
+                {
+                    FullUrl = $"urn:uuid:{observation.Id}",
+                    Resource = observation
+                });
+            }
+
+            foreach (var medicationInput in MedicationsInput)
+            {
+                var medicationRequest = CreateMedicationRequestFromInput(medicationInput);
+                bundle.Entry.Add(new Bundle.EntryComponent
+                {
+                    FullUrl = $"urn:uuid:{medicationRequest.Id}",
+                    Resource = medicationRequest
+                });
+            }
+
+            foreach (var allergyInput in AllergiesInput)
+            {
+                var allergy = CreateAllergyIntoleranceFromInput(allergyInput);
+                bundle.Entry.Add(new Bundle.EntryComponent
+                {
+                    FullUrl = $"urn:uuid:{allergy.Id}",
+                    Resource = allergy
+                });
+            }
+
+            // Add overall assessment as Observation
+            if (OverallAssessment != null)
+            {
+                var assessmentObs = CreateOverallAssessmentObservation();
+                bundle.Entry.Add(new Bundle.EntryComponent
+                {
+                    FullUrl = $"urn:uuid:{assessmentObs.Id}",
+                    Resource = assessmentObs
+                });
+            }
+        }
+
+        // Helper methods to create FHIR resources
+        private Patient CreatePatientResource()
+        {
+            return new Patient
+            {
+                Id = FhirHelper.GenerateUniqueId("Patient"),
+                Meta = new Meta
+                {
+                    Profile = new[] { "http://jpfhir.jp/fhir/core/StructureDefinition/JP_Patient" }
+                },
+                Active = true,
+                Name = new List<HumanName>
+                {
+                    new HumanName
+                    {
+                        Use = HumanName.NameUse.Official,
+                        Text = PatientReference?.Display ?? "Patient Name"
+                    }
+                }
+            };
+        }
+
+        private Practitioner CreatePractitionerResource()
+        {
+            return new Practitioner
+            {
+                Id = FhirHelper.GenerateUniqueId("Practitioner"),
+                Meta = new Meta
+                {
+                    Profile = new[] { "http://jpfhir.jp/fhir/core/StructureDefinition/JP_Practitioner" }
+                },
+                Active = true,
+                Name = new List<HumanName>
+                {
+                    new HumanName
+                    {
+                        Use = HumanName.NameUse.Official,
+                        Text = ExaminingPhysician?.Display ?? "Examining Physician"
+                    }
+                }
+            };
+        }
+
+        private Organization CreateOrganizationResource()
+        {
+            return new Organization
+            {
+                Id = FhirHelper.GenerateUniqueId("Organization"),
+                Meta = new Meta
+                {
+                    Profile = new[] { "http://jpfhir.jp/fhir/core/StructureDefinition/JP_Organization" }
+                },
+                Active = true,
+                Name = OrganizationReference?.Display ?? "Healthcare Organization"
+            };
+        }
+
+        private Encounter CreateCheckupEncounter()
+        {
+            return new Encounter
+            {
+                Id = FhirHelper.GenerateUniqueId("Encounter"),
+                Meta = new Meta
+                {
+                    Profile = new[] { "http://jpfhir.jp/fhir/core/StructureDefinition/JP_Encounter" }
+                },
+                Status = Encounter.EncounterStatus.Finished,
+                Class = new Coding("http://terminology.hl7.org/CodeSystem/v3-ActCode", "AMB", "ambulatory"),
+                Type = new List<CodeableConcept> { CheckupType },
+                Subject = PatientReference,
+                Period = new Period
+                {
+                    Start = CheckupDate.ToString("yyyy-MM-dd")
+                }
+            };
+        }
+
+        private Condition CreateConditionFromInput(ConditionInputModel input)
+        {
+            return new Condition
+            {
+                Id = FhirHelper.GenerateUniqueId("Condition"),
+                Meta = new Meta
+                {
+                    Profile = new[] { "http://jpfhir.jp/fhir/core/StructureDefinition/JP_Condition" }
+                },
+                ClinicalStatus = new CodeableConcept("http://terminology.hl7.org/CodeSystem/condition-clinical", input.ClinicalStatus),
+                VerificationStatus = new CodeableConcept("http://terminology.hl7.org/CodeSystem/condition-ver-status", input.VerificationStatus),
+                Code = new CodeableConcept
+                {
+                    Text = input.ConditionName
+                },
+                Subject = PatientReference
+            };
+        }
+
+        private Observation CreateObservationFromInput(ObservationInputModel input)
+        {
+            return new Observation
+            {
+                Id = FhirHelper.GenerateUniqueId("Observation"),
+                Meta = new Meta
+                {
+                    Profile = new[] { "http://jpfhir.jp/fhir/core/StructureDefinition/JP_Observation_VitalSigns" }
+                },
+                Status = ObservationStatus.Final,
+                Category = new List<CodeableConcept>
+                {
+                    new CodeableConcept("http://terminology.hl7.org/CodeSystem/observation-category", "vital-signs")
+                },
+                Code = new CodeableConcept
+                {
+                    Text = input.ObservationName
+                },
+                Subject = PatientReference,
+                Effective = new FhirDateTime(CheckupDate),
+                Value = new FhirString(input.ValueString ?? input.ValueQuantity?.ToString())
+            };
+        }
+
+        private MedicationRequest CreateMedicationRequestFromInput(MedicationRequestInputModel input)
+        {
+            return new MedicationRequest
+            {
+                Id = FhirHelper.GenerateUniqueId("MedicationRequest"),
+                Meta = new Meta
+                {
+                    Profile = new[] { "http://jpfhir.jp/fhir/core/StructureDefinition/JP_MedicationRequest" }
+                },
+                Status = MedicationRequest.MedicationrequestStatus.Active,
+                Intent = MedicationRequest.MedicationRequestIntent.Order,
+                Subject = PatientReference,
+                Medication = new CodeableConcept
+                {
+                    Text = input.MedicationName
+                }
+            };
+        }
+
+        private AllergyIntolerance CreateAllergyIntoleranceFromInput(AllergyIntoleranceInputModel input)
+        {
+            return new AllergyIntolerance
+            {
+                Id = FhirHelper.GenerateUniqueId("AllergyIntolerance"),
+                Meta = new Meta
+                {
+                    Profile = new[] { "http://jpfhir.jp/fhir/core/StructureDefinition/JP_AllergyIntolerance" }
+                },
+                ClinicalStatus = new CodeableConcept("http://terminology.hl7.org/CodeSystem/allergyintolerance-clinical", input.ClinicalStatus),
+                VerificationStatus = new CodeableConcept("http://terminology.hl7.org/CodeSystem/allergyintolerance-verification", input.VerificationStatus),
+                Patient = PatientReference,
+                Code = new CodeableConcept
+                {
+                    Text = input.SubstanceName
+                }
+            };
+        }
+
+        private Observation CreateOverallAssessmentObservation()
+        {
+            return new Observation
+            {
+                Id = FhirHelper.GenerateUniqueId("Observation"),
+                Meta = new Meta
+                {
+                    Profile = new[] { "http://jpfhir.jp/fhir/core/StructureDefinition/JP_Observation_Common" }
+                },
+                Status = ObservationStatus.Final,
+                Category = new List<CodeableConcept>
+                {
+                    new CodeableConcept("http://terminology.hl7.org/CodeSystem/observation-category", "exam")
+                },
+                Code = new CodeableConcept("http://loinc.org", "72133-2", "Health assessment"),
+                Subject = PatientReference,
+                Effective = new FhirDateTime(CheckupDate),
+                Value = OverallAssessment,
+                Note = !string.IsNullOrWhiteSpace(Recommendations)
+                    ? new List<Annotation> { new Annotation { Text = Recommendations } }
+                    : null
+            };
         }
     }
 }

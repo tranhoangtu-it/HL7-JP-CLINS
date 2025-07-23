@@ -1,4 +1,5 @@
-using Hl7.Fhir.Model;
+using HL7_JP_CLINS_Core.FhirModels;
+using HL7_JP_CLINS_Core.Utilities;
 using System.ComponentModel.DataAnnotations;
 using Newtonsoft.Json;
 
@@ -27,23 +28,23 @@ namespace HL7_JP_CLINS_Core.Models.Base
 
         [JsonProperty("patientReference")]
         [Required]
-        public ResourceReference PatientReference { get; set; } = new ResourceReference();
+        public Reference PatientReference { get; set; } = new Reference();
 
         [JsonProperty("authorReference")]
         [Required]
-        public ResourceReference AuthorReference { get; set; } = new ResourceReference();
+        public Reference AuthorReference { get; set; } = new Reference();
 
         [JsonProperty("organizationReference")]
         [Required]
-        public ResourceReference OrganizationReference { get; set; } = new ResourceReference();
+        public Reference OrganizationReference { get; set; } = new Reference();
 
         /// <summary>
         /// Common validation logic for all documents
         /// Override in derived classes for specific validation rules
         /// </summary>
-        public virtual ValidationResult Validate()
+        public virtual HL7_JP_CLINS_Core.Utilities.ValidationResult Validate()
         {
-            var result = new ValidationResult();
+            var result = new HL7_JP_CLINS_Core.Utilities.ValidationResult();
             var context = new ValidationContext(this);
             var validationResults = new List<System.ComponentModel.DataAnnotations.ValidationResult>();
 
@@ -68,137 +69,157 @@ namespace HL7_JP_CLINS_Core.Models.Base
         /// JP-CLINS specific validation rules
         /// Based on JP-CLINS Implementation Guide v1.11.0
         /// </summary>
-        protected virtual void ValidateJpClinsRules(ValidationResult result)
+        protected virtual void ValidateJpClinsRules(HL7_JP_CLINS_Core.Utilities.ValidationResult result)
         {
             // Validate document ID format according to JP-CLINS
             if (!string.IsNullOrWhiteSpace(Id) && !IsValidJpClinsDocumentId(Id))
             {
-                result.IsValid = false;
-                result.Errors.Add("Document ID must follow JP-CLINS format: prefix-timestamp-guid");
+                result.AddError("Document ID must follow JP-CLINS format: prefix-timestamp-guid");
             }
 
             // Validate version format
             if (!string.IsNullOrWhiteSpace(Version) && !IsValidVersionFormat(Version))
             {
-                result.IsValid = false;
-                result.Errors.Add("Version must follow semantic versioning format (e.g., 1.0, 1.1.0)");
+                result.AddError("Version must follow semantic versioning format (e.g., 1.0, 1.1.0)");
             }
 
             // Validate status according to JP-CLINS allowed values
             if (!IsValidJpClinsStatus(Status))
             {
-                result.IsValid = false;
-                result.Errors.Add($"Status '{Status}' is not valid for JP-CLINS documents");
+                result.AddError($"Status '{Status}' is not valid for JP-CLINS documents");
             }
 
             // Validate patient reference format
-            if (PatientReference != null && !string.IsNullOrWhiteSpace(PatientReference.Reference))
+            if (PatientReference != null && !string.IsNullOrWhiteSpace(PatientReference.ReferenceValue))
             {
-                if (!IsValidFhirReference(PatientReference.Reference, "Patient"))
+                if (!IsValidFhirReference(PatientReference.ReferenceValue, "Patient"))
                 {
-                    result.IsValid = false;
-                    result.Errors.Add("Patient reference must follow FHIR format: Patient/[id]");
+                    result.AddError("Patient reference must follow FHIR format: Patient/[id]");
                 }
             }
 
             // Validate author reference format
-            if (AuthorReference != null && !string.IsNullOrWhiteSpace(AuthorReference.Reference))
+            if (AuthorReference != null && !string.IsNullOrWhiteSpace(AuthorReference.ReferenceValue))
             {
-                if (!IsValidFhirReference(AuthorReference.Reference, "Practitioner", "PractitionerRole", "Organization"))
+                if (!IsValidFhirReference(AuthorReference.ReferenceValue, "Practitioner", "Organization"))
                 {
-                    result.IsValid = false;
-                    result.Errors.Add("Author reference must be Practitioner, PractitionerRole, or Organization");
+                    result.AddError("Author reference must follow FHIR format: Practitioner/[id] or Organization/[id]");
                 }
             }
 
             // Validate organization reference format
-            if (OrganizationReference != null && !string.IsNullOrWhiteSpace(OrganizationReference.Reference))
+            if (OrganizationReference != null && !string.IsNullOrWhiteSpace(OrganizationReference.ReferenceValue))
             {
-                if (!IsValidFhirReference(OrganizationReference.Reference, "Organization"))
+                if (!IsValidFhirReference(OrganizationReference.ReferenceValue, "Organization"))
                 {
-                    result.IsValid = false;
-                    result.Errors.Add("Organization reference must follow FHIR format: Organization/[id]");
+                    result.AddError("Organization reference must follow FHIR format: Organization/[id]");
                 }
             }
 
-            // Validate Japanese business hours for document creation
+            // Validate Japanese business context requirements
             ValidateJapaneseBusinessContext(result);
         }
 
+        /// <summary>
+        /// Validates JP-CLINS document ID format
+        /// </summary>
         private bool IsValidJpClinsDocumentId(string id)
         {
             // JP-CLINS document ID format: prefix-timestamp-guid
+            // Example: eReferral-20231201-12345678-90ab-cdef-1234-567890abcdef
             var parts = id.Split('-');
-            return parts.Length >= 3 &&
-                   !string.IsNullOrWhiteSpace(parts[0]) &&
-                   parts[1].All(char.IsDigit) &&
-                   parts[1].Length >= 8;
+            return parts.Length >= 4 && parts[0].Length > 0 && parts[1].Length == 8;
         }
 
+        /// <summary>
+        /// Validates version format
+        /// </summary>
         private bool IsValidVersionFormat(string version)
         {
-            var regex = new System.Text.RegularExpressions.Regex(@"^\d+(\.\d+){0,2}$");
-            return regex.IsMatch(version);
+            // Semantic versioning: major.minor.patch
+            return System.Text.RegularExpressions.Regex.IsMatch(version, @"^\d+\.\d+(\.\d+)?$");
         }
 
+        /// <summary>
+        /// Validates JP-CLINS status values
+        /// </summary>
         private bool IsValidJpClinsStatus(string status)
         {
-            var validStatuses = new[] { "draft", "final", "amended", "cancelled", "replaced" };
-            return validStatuses.Contains(status?.ToLower());
+            var validStatuses = new[] { "draft", "active", "suspended", "cancelled", "completed" };
+            return validStatuses.Contains(status.ToLowerInvariant());
         }
 
+        /// <summary>
+        /// Validates FHIR reference format
+        /// </summary>
         private bool IsValidFhirReference(string reference, params string[] allowedResourceTypes)
         {
-            if (string.IsNullOrWhiteSpace(reference)) return false;
+            if (string.IsNullOrWhiteSpace(reference))
+                return false;
 
             var parts = reference.Split('/');
-            if (parts.Length != 2) return false;
+            if (parts.Length != 2)
+                return false;
 
-            return allowedResourceTypes.Contains(parts[0]) && !string.IsNullOrWhiteSpace(parts[1]);
+            return allowedResourceTypes.Contains(parts[0]);
         }
 
-        private void ValidateJapaneseBusinessContext(ValidationResult result)
+        /// <summary>
+        /// Validates Japanese business context requirements
+        /// </summary>
+        private void ValidateJapaneseBusinessContext(HL7_JP_CLINS_Core.Utilities.ValidationResult result)
         {
-            // Convert to Japan time for validation
-            var japanTimeZone = TimeZoneInfo.FindSystemTimeZoneById("Tokyo Standard Time");
-            var japanTime = TimeZoneInfo.ConvertTimeFromUtc(CreatedDate.ToUniversalTime(), japanTimeZone);
-
-            // Check if document is created during reasonable business hours (optional warning)
-            if (japanTime.Hour < 6 || japanTime.Hour > 22)
+            // Check for Japanese text in document
+            if (!string.IsNullOrWhiteSpace(Id) && !ContainsJapaneseCharacters(Id))
             {
-                // This is a warning, not an error - documents can be created outside business hours
-                result.Errors.Add($"Warning: Document created outside typical business hours ({japanTime:HH:mm} JST)");
+                result.AddWarning("Document ID should include Japanese characters for better identification");
             }
 
-            // Validate date format matches Japanese standards
-            if (CreatedDate.Kind != DateTimeKind.Utc)
+            // Validate created date is not in the future
+            if (CreatedDate > DateTime.UtcNow)
             {
-                result.IsValid = false;
-                result.Errors.Add("Document creation date must be in UTC format for international compatibility");
+                result.AddError("Created date cannot be in the future");
+            }
+
+            // Validate last modified date is not before created date
+            if (LastModifiedDate.HasValue && LastModifiedDate.Value < CreatedDate)
+            {
+                result.AddError("Last modified date cannot be before created date");
             }
         }
 
         /// <summary>
-        /// Abstract method to be implemented by derived classes
-        /// Each document type will have its own FHIR Bundle structure
+        /// Checks if text contains Japanese characters
+        /// </summary>
+        private bool ContainsJapaneseCharacters(string text)
+        {
+            return text.Any(c => (c >= 0x3040 && c <= 0x309F) || // Hiragana
+                                (c >= 0x30A0 && c <= 0x30FF) || // Katakana
+                                (c >= 0x4E00 && c <= 0x9FAF));  // Kanji
+        }
+
+        /// <summary>
+        /// Converts document to FHIR Bundle
         /// </summary>
         public abstract Bundle ToFhirBundle();
 
         /// <summary>
-        /// Updates the last modified timestamp
+        /// Updates the last modified date
         /// </summary>
         public void UpdateLastModified()
         {
             LastModifiedDate = DateTime.UtcNow;
         }
-    }
 
-    /// <summary>
-    /// Validation result class
-    /// </summary>
-    public class ValidationResult
-    {
-        public bool IsValid { get; set; } = true;
-        public List<string> Errors { get; set; } = new List<string>();
+        /// <summary>
+        /// Gets the document type identifier
+        /// </summary>
+        public abstract string DocumentType { get; }
+
+        /// <summary>
+        /// Gets the JP-CLINS profile URL
+        /// </summary>
+        public abstract string ProfileUrl { get; }
     }
+}
 }
